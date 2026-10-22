@@ -1,0 +1,16 @@
+{
+  "name": "Mission Charts",
+  "short_name": "Missions",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#efe6d6",
+  "theme_color": "#1c2421",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

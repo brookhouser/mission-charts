@@ -1,0 +1,126 @@
+rules_version = '2';
+// Mission Charts only. Other apps in Brookhouser Family Apps must use
+// their own top-level prefix. Publish this file in the Firebase console
+// (Firestore → Rules) or with `firebase deploy --only firestore:rules`.
+//
+// Allowlist, kept in sync with js/people.js:
+//   sambrookhouser@gmail.com      Sam, kid, own days only
+//   wilsonbrookhouser@gmail.com   Wally, kid, own days only
+//   brookhouser@gmail.com         Kevin, admin
+//   bbrookhouser@gmail.com        Beth, admin
+//
+// Kids may read their routines and read/write check-offs on their own
+// day docs. They cannot set a tier, edit a routine, change a school day,
+// or read the other kid. Admins can do all of that for both kids.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email is string
+        && request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
+
+    function email() {
+      return request.auth.token.email.lower();
+    }
+
+    function isSam() {
+      return signedIn() && email() == 'sambrookhouser@gmail.com';
+    }
+
+    function isWally() {
+      return signedIn() && email() == 'wilsonbrookhouser@gmail.com';
+    }
+
+    function isAdmin() {
+      return signedIn() && (
+        email() == 'brookhouser@gmail.com'
+        || email() == 'bbrookhouser@gmail.com'
+      );
+    }
+
+    function ownsDay(dayId) {
+      return (isSam() && dayId.matches('^sam_[0-9]{4}-[0-9]{2}-[0-9]{2}$'))
+        || (isWally() && dayId.matches('^wally_[0-9]{4}-[0-9]{2}-[0-9]{2}$'));
+    }
+
+    function validDayId(dayId) {
+      return dayId.matches('^(sam|wally)_[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function checksOk(data) {
+      return data.checks is map && data.checks.size() < 120;
+    }
+
+    function kidCreate(dayId) {
+      let data = request.resource.data;
+      return ownsDay(dayId)
+        && data.kidId == dayId.split('_')[0]
+        && data.date == dayId.split('_')[1]
+        && checksOk(data)
+        && data.keys().hasOnly(['kidId', 'date', 'checks', 'updatedAt']);
+    }
+
+    function kidUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['checks', 'updatedAt'])
+        && checksOk(request.resource.data)
+        && request.resource.data.kidId == resource.data.kidId
+        && request.resource.data.date == resource.data.date;
+    }
+
+    function adminDay(dayId) {
+      let data = request.resource.data;
+      return data.kidId == dayId.split('_')[0]
+        && data.date == dayId.split('_')[1]
+        && data.kidId in ['sam', 'wally']
+        && checksOk(data)
+        && data.keys().hasOnly([
+          'kidId', 'date', 'checks', 'updatedAt',
+          'schoolDay', 'tierStatus', 'tier', 'scoredBy', 'scoredAt'
+        ])
+        && (!('schoolDay' in data) || data.schoolDay is bool)
+        && (!('tierStatus' in data) || data.tierStatus in ['open', 'confirmed', 'waived'])
+        && (!('tier' in data) || data.tier in ['S', 'A', 'B'])
+        && (!('tierStatus' in data) || data.tierStatus != 'confirmed' || data.tier in ['S', 'A', 'B'])
+        && (!('scoredBy' in data) || data.scoredBy is string)
+        && (!('scoredAt' in data) || data.scoredAt is number)
+        && (!('updatedAt' in data) || data.updatedAt is number);
+    }
+
+    match /missionCharts_days/{dayId} {
+      allow read: if validDayId(dayId) && (isAdmin() || ownsDay(dayId));
+      allow create: if validDayId(dayId) && (
+        (isAdmin() && adminDay(dayId)) || kidCreate(dayId)
+      );
+      allow update: if validDayId(dayId) && (
+        (isAdmin() && adminDay(dayId)) || (ownsDay(dayId) && kidUpdate())
+      );
+      allow delete: if isAdmin();
+    }
+
+    function canReadRoutine(routineId) {
+      return isAdmin()
+        || (isSam() && (routineId == 'sam_morning' || routineId == 'sam_evening'))
+        || (isWally() && (routineId == 'wally_morning' || routineId == 'wally_evening'));
+    }
+
+    function routineOk(routineId) {
+      let data = request.resource.data;
+      return routineId.matches('^(sam|wally)_(morning|evening)$')
+        && data.kidId == routineId.split('_')[0]
+        && data.period == routineId.split('_')[1]
+        && data.sections is list
+        && data.sections.size() > 0
+        && data.sections.size() < 20
+        && data.keys().hasOnly(['kidId', 'period', 'sections', 'updatedAt']);
+    }
+
+    match /missionCharts_routines/{routineId} {
+      allow read: if canReadRoutine(routineId);
+      allow create, update: if isAdmin() && routineOk(routineId);
+      allow delete: if isAdmin();
+    }
+  }
+}
